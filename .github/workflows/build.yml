@@ -8,9 +8,9 @@ permissions: {}
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "master", "feature/*" ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ "master", "feature/*" ]
 
 jobs:
   prepare:
@@ -701,3 +701,491 @@ jobs:
         name: YGOPro-${{ matrix.name }}
         path: |
           bin/release/YGOPro
+
+  build-ocgcore-windows:
+    needs: [prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        name:
+          - ocgcore-windows-x64
+          - ocgcore-windows-x86
+        include:
+          - name: ocgcore-windows-x64
+            platform: x64
+            artifact-dir: x64
+          - name: ocgcore-windows-x86
+            platform: Win32
+            artifact-dir: x86
+
+    runs-on: windows-2022
+
+    steps:
+    - name: Download sources
+      uses: actions/download-artifact@v7
+      with:
+        name: dependencies-sources
+        path: .
+
+    - name: Add msbuild to PATH
+      uses: microsoft/setup-msbuild@v3
+
+    - name: Download premake
+      id: premake
+      uses: mercury233/action-cache-download-file@v1.2.0
+      with:
+        url: https://github.com/premake/premake-core/releases/download/v5.0.0-beta8/premake-5.0.0-beta8-windows.zip
+        filename: premake5.zip
+        sha256: e64ce2ed8778e0098f63674cca61fe33941b5f0c8d9a4afd651152bdea3758ab
+
+    - name: Extract premake
+      shell: bash
+      run: 7z x ${{ steps.premake.outputs.filepath }}
+
+    - name: Generate solution with premake
+      shell: bash
+      run: |
+        cp -r lua ocgcore/lua
+        cd ocgcore
+        cp premake/lua.lua lua/premake5.lua
+        cp premake/dll.lua dll.lua
+        sed -i 's/x32/x86/g' dll.lua
+        ../premake5 vs2022 --file=dll.lua
+
+    - name: Build ocgcore DLL
+      shell: pwsh
+      run: |
+        cd ocgcore
+        MSBuild.exe build\ocgcoredll.sln /m /t:Build /p:Configuration=Release /p:Platform=${{ matrix.platform }}
+        cd ..
+
+    - name: Upload ocgcore DLL
+      uses: actions/upload-artifact@v6
+      with:
+        name: ${{ matrix.name }}
+        path: ocgcore/build/bin/${{ matrix.artifact-dir }}/Release/ocgcore.dll
+
+  build-sqlite3-windows:
+    needs: [prepare-static-dependencies]
+    strategy:
+      fail-fast: false
+      matrix:
+        name:
+          - sqlite3-windows-x64
+          - sqlite3-windows-x86
+        include:
+          - name: sqlite3-windows-x64
+            arch: amd64
+          - name: sqlite3-windows-x86
+            arch: x86
+
+    runs-on: windows-2022
+
+    steps:
+    - name: Download sqlite3 sources
+      uses: actions/download-artifact@v7
+      with:
+        name: dependencies-sources-static-link
+        path: .
+
+    - name: Setup MSVC environment
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: ${{ matrix.arch }}
+
+    - name: Build sqlite3 DLL
+      shell: cmd
+      run: |
+        cd sqlite3
+        cl /nologo /MD /O2 /DSQLITE_API=__declspec(dllexport) /DSQLITE_DQS=0 /DSQLITE_DEFAULT_MEMSTATUS=0 /DSQLITE_MAX_EXPR_DEPTH=0 /DSQLITE_OMIT_DECLTYPE /DSQLITE_OMIT_DEPRECATED /DSQLITE_OMIT_PROGRESS_CALLBACK /DSQLITE_OMIT_SHARED_CACHE /DSQLITE_TRUSTED_SCHEMA=0 /c sqlite3.c
+        link /nologo /DLL /OUT:sqlite3.dll sqlite3.obj
+        cd ..
+        mkdir output
+        move sqlite3\sqlite3.dll output\
+        move sqlite3\sqlite3.lib output\
+
+    - name: Upload sqlite3 DLL
+      uses: actions/upload-artifact@v6
+      with:
+        name: ${{ matrix.name }}
+        path: output/
+
+  build-ocgcore-linux:
+    needs: [prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        name:
+          - ocgcore-linux-x64
+          - ocgcore-linux-x86
+        include:
+          - name: ocgcore-linux-x64
+            config: release_x64
+            artifact-dir: x64
+          - name: ocgcore-linux-x86
+            config: release_x86
+            artifact-dir: x86
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Download sources
+      uses: actions/download-artifact@v7
+      with:
+        name: dependencies-sources
+        path: .
+
+    - name: Install build dependencies (multilib)
+      if: matrix.config == 'release_x86'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-multilib g++-multilib
+
+    - name: Download premake
+      id: premake
+      uses: mercury233/action-cache-download-file@v1.2.0
+      with:
+        url: https://github.com/premake/premake-core/releases/download/v5.0.0-beta8/premake-5.0.0-beta8-linux.tar.gz
+        filename: premake5.tar.gz
+        sha256: 63edd3e7461eebdd45b500a3c7e8ad4e7a67d68f230010f9a97cbb71b4ec59c8
+
+    - name: Extract premake
+      run: |
+        tar xf ${{ steps.premake.outputs.filepath }}
+        chmod +x ./premake5
+
+    - name: Build ocgcore shared library
+      run: |
+        cp -r lua ocgcore/lua
+        cd ocgcore
+        cp premake/lua.lua lua/premake5.lua
+        cp premake/dll.lua dll.lua
+        sed -i 's/x32/x86/g' dll.lua
+        ../premake5 gmake --file=dll.lua
+        cd build
+        make -j $(nproc) config=${{ matrix.config }}
+        cd ../..
+
+    - name: Upload ocgcore shared library
+      uses: actions/upload-artifact@v6
+      with:
+        name: ${{ matrix.name }}
+        path: ocgcore/build/bin/${{ matrix.artifact-dir }}/Release/libocgcore.so
+
+  build-sqlite3-linux:
+    needs: [prepare-static-dependencies]
+    strategy:
+      fail-fast: false
+      matrix:
+        name:
+          - sqlite3-linux-x64
+        include:
+          - name: sqlite3-linux-x64
+            arch: x64
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Download sqlite3 sources
+      uses: actions/download-artifact@v7
+      with:
+        name: dependencies-sources-static-link
+        path: .
+
+    - name: Build sqlite3 shared library
+      run: |
+        cd sqlite3
+        gcc -shared -fPIC -O2 -DSQLITE_DQS=0 -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_MAX_EXPR_DEPTH=0 -DSQLITE_OMIT_DECLTYPE -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_PROGRESS_CALLBACK -DSQLITE_OMIT_SHARED_CACHE -DSQLITE_TRUSTED_SCHEMA=0 -o libsqlite3.so sqlite3.c
+        cd ..
+        mkdir -p output
+        mv sqlite3/libsqlite3.so output/
+
+    - name: Upload sqlite3 shared library
+      uses: actions/upload-artifact@v6
+      with:
+        name: ${{ matrix.name }}
+        path: output/
+
+  build-ocgcore-macos:
+    needs: [prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        name:
+          - ocgcore-macos-arm64
+          - ocgcore-macos-x86_64
+        include:
+          - name: ocgcore-macos-arm64
+            arch: arm64
+          - name: ocgcore-macos-x86_64
+            arch: x86_64
+
+    runs-on: macos-26
+
+    steps:
+    - name: Download sources
+      uses: actions/download-artifact@v7
+      with:
+        name: dependencies-sources
+        path: .
+
+    - name: Build ocgcore dylib (${{ matrix.arch }})
+      run: |
+        COMMON_FLAGS="-std=c++14 -O2 -I../lua/src -DLUA_USE_MACOSX"
+        ARCH=${{ matrix.arch }}
+
+        # Build lua static lib
+        cd lua
+        mkdir -p obj
+        for f in src/*.c; do
+          base=$(basename "$f" .c)
+          if [ "$base" != "lua" ] && [ "$base" != "luac" ] && [ "$base" != "linit" ] && [ "$base" != "onelua" ]; then
+            clang++ -arch $ARCH -std=c++11 -O2 -DLUA_USE_MACOSX -c "$f" -o "obj/${base}.o"
+          fi
+        done
+        ar rcs liblua.a obj/*.o
+        cd ..
+
+        # Build ocgcore dylib
+        cd ocgcore
+        mkdir -p obj
+        for f in *.cpp; do
+          base=$(basename "$f" .cpp)
+          clang++ -arch $ARCH $COMMON_FLAGS -c "$f" -o "obj/${base}.o"
+        done
+        clang++ -arch $ARCH -dynamiclib -O2 -o libocgcore.dylib obj/*.o ../lua/liblua.a
+        cd ..
+
+        mkdir -p output
+        mv ocgcore/libocgcore.dylib output/
+
+    - name: Upload ocgcore dylib
+      uses: actions/upload-artifact@v6
+      with:
+        name: ${{ matrix.name }}
+        path: output/
+
+  build-ocgcore-web:
+    needs: [prepare]
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Download sources
+      uses: actions/download-artifact@v7
+      with:
+        name: dependencies-sources
+        path: .
+
+    - name: Setup emscripten
+      uses: mymindstorm/setup-emsdk@v12
+      with:
+        emsdk-version: 3.1.74
+
+    - name: Build ocgcore wasm
+      run: |
+        cd lua
+        mkdir -p obj
+        for f in src/*.c; do
+          base=$(basename "$f" .c)
+          if [ "$base" != "lua" ] && [ "$base" != "luac" ] && [ "$base" != "linit" ] && [ "$base" != "onelua" ]; then
+            emcc -std=c11 -O2 -Dl_system\(cmd\)=\(-1\) -Wno-deprecated -c "$f" -o "obj/${base}.o"
+          fi
+        done
+        ar rcs liblua.a obj/*.o
+        cd ..
+
+        cd ocgcore
+        mkdir -p obj
+        for f in *.cpp; do
+          base=$(basename "$f" .cpp)
+          em++ -std=c++14 -O2 -I../lua/src -c "$f" -o "obj/${base}.o"
+        done
+        em++ -O2 -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 -s EXPORT_ALL=1 -s EXPORTED_RUNTIME_METHODS='["ccall", "cwrap"]' -o libocgcore.js obj/*.o ../lua/liblua.a
+        cd ..
+
+        mkdir -p output
+        mv ocgcore/libocgcore.js output/
+        mv ocgcore/libocgcore.wasm output/
+
+    - name: Upload ocgcore wasm
+      uses: actions/upload-artifact@v6
+      with:
+        name: ocgcore-web
+        path: output/
+
+  build-sqlite3-macos:
+    needs: [prepare-static-dependencies]
+    strategy:
+      fail-fast: false
+      matrix:
+        name:
+          - sqlite3-macos-arm64
+          - sqlite3-macos-x86_64
+        include:
+          - name: sqlite3-macos-arm64
+            arch: arm64
+          - name: sqlite3-macos-x86_64
+            arch: x86_64
+
+    runs-on: macos-26
+
+    steps:
+    - name: Download sqlite3 sources
+      uses: actions/download-artifact@v7
+      with:
+        name: dependencies-sources-static-link
+        path: .
+
+    - name: Build sqlite3 dylib (${{ matrix.arch }})
+      run: |
+        cd sqlite3
+        SQLITE_FLAGS="-DSQLITE_DQS=0 -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_MAX_EXPR_DEPTH=0 -DSQLITE_OMIT_DECLTYPE -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_PROGRESS_CALLBACK -DSQLITE_OMIT_SHARED_CACHE -DSQLITE_TRUSTED_SCHEMA=0"
+        clang -arch ${{ matrix.arch }} -dynamiclib -O2 $SQLITE_FLAGS -o libsqlite3.dylib sqlite3.c
+        cd ..
+        mkdir -p output
+        mv sqlite3/libsqlite3.dylib output/
+
+    - name: Upload sqlite3 dylib
+      uses: actions/upload-artifact@v6
+      with:
+        name: ${{ matrix.name }}
+        path: output/
+
+  ocgcore-android:
+    needs: [prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a]
+        include:
+          - abi: arm64-v8a
+            target: aarch64-linux-android21
+          - abi: armeabi-v7a
+            target: armv7a-linux-androideabi21
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Download sources
+      uses: actions/download-artifact@v7
+      with:
+        name: dependencies-sources
+        path: .
+
+    - name: Setup Android NDK
+      id: setup-ndk
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r27c
+        add-to-path: false
+
+    - name: Build for Android (${{ matrix.abi }})
+      run: |
+        TOOLCHAIN="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64"
+        export CC="$TOOLCHAIN/bin/${{ matrix.target }}-clang"
+        export CXX="$TOOLCHAIN/bin/${{ matrix.target }}-clang++"
+        export AR="$TOOLCHAIN/bin/llvm-ar"
+        TARGET_FLAGS="-target ${{ matrix.target }} -fPIC -O2"
+
+        # Build lua as static library
+        cd lua
+        mkdir -p obj
+        for f in src/*.c; do
+          base=$(basename "$f" .c)
+          if [ "$base" != "lua" ] && [ "$base" != "luac" ] && [ "$base" != "linit" ] && [ "$base" != "onelua" ]; then
+            $CXX -std=c++11 -Wno-deprecated $TARGET_FLAGS -c "$f" -o "obj/${base}.o"
+          fi
+        done
+        $AR rcs liblua.a obj/*.o
+        cd ..
+
+        # Build ocgcore shared library
+        cd ocgcore
+        mkdir -p obj
+        for f in *.cpp; do
+          base=$(basename "$f" .cpp)
+          $CXX -std=c++14 $TARGET_FLAGS -I../lua/src -DLUA_USE_POSIX -c "$f" -o "obj/${base}.o"
+        done
+        $CXX -shared -fPIC $TARGET_FLAGS -o "libocgcore.so" obj/*.o ../lua/liblua.a
+        cd ..
+
+        mkdir -p "output/${{ matrix.abi }}"
+        mv ocgcore/libocgcore.so "output/${{ matrix.abi }}/"
+
+    - name: Upload Android libraries
+      uses: actions/upload-artifact@v6
+      with:
+        name: ocgcore-android-${{ matrix.abi }}
+        path: output/${{ matrix.abi }}/
+
+  ocgcore-ios:
+    needs: [prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        name:
+          - ocgcore-ios-device
+          - ocgcore-ios-simulator
+        include:
+          - name: ocgcore-ios-device
+            sdk: iphoneos
+          - name: ocgcore-ios-simulator
+            sdk: iphonesimulator
+
+    runs-on: macos-26
+
+    steps:
+    - name: Download sources
+      uses: actions/download-artifact@v7
+      with:
+        name: dependencies-sources
+        path: .
+
+    - name: Setup Xcode and iOS SDK
+      run: |
+        sudo xcodebuild -license accept
+        sudo xcodebuild -runFirstLaunch
+        xcodebuild -downloadPlatform iOS
+
+    - name: Build for iOS (${{ matrix.sdk }})
+      run: |
+        SDK_PATH=$(xcrun --sdk ${{ matrix.sdk }} --show-sdk-path)
+        CC="xcrun --sdk ${{ matrix.sdk }} clang"
+        CXX="xcrun --sdk ${{ matrix.sdk }} clang++"
+        AR="xcrun --sdk ${{ matrix.sdk }} ar"
+        ARCH="arm64"
+
+        BASE_FLAGS="-arch $ARCH -isysroot $SDK_PATH -miphoneos-version-min=12.0 -O2"
+        OCGCORE_FLAGS="$BASE_FLAGS -std=c++14 -I../lua/src -DLUA_USE_MACOSX"
+        LUA_FLAGS="$BASE_FLAGS -std=c++11 -DLUA_USE_MACOSX -Dl_system(cmd)=(-1) -Wno-deprecated"
+
+        # Build lua as static library
+        cd lua
+        mkdir -p obj
+        for f in src/*.c; do
+          base=$(basename "$f" .c)
+          if [ "$base" != "lua" ] && [ "$base" != "luac" ] && [ "$base" != "linit" ] && [ "$base" != "onelua" ]; then
+            $CXX $LUA_FLAGS -c "$f" -o "obj/${base}.o"
+          fi
+        done
+        $AR rcs liblua.a obj/*.o
+        cd ..
+
+        # Build ocgcore dylib
+        cd ocgcore
+        mkdir -p obj
+        for f in *.cpp; do
+          base=$(basename "$f" .cpp)
+          $CXX $OCGCORE_FLAGS -c "$f" -o "obj/${base}.o"
+        done
+        $CXX -dynamiclib $BASE_FLAGS -o "libocgcore.dylib" obj/*.o ../lua/liblua.a
+        cd ..
+
+        mkdir -p "output/${{ matrix.sdk }}"
+        mv ocgcore/libocgcore.dylib "output/${{ matrix.sdk }}/"
+
+    - name: Upload iOS libraries
+      uses: actions/upload-artifact@v6
+      with:
+        name: ${{ matrix.name }}
+        path: output/${{ matrix.sdk }}/
