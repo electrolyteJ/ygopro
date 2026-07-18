@@ -702,6 +702,44 @@ jobs:
         path: |
           bin/release/YGOPro
 
+  generate-ocgcore-export-header:
+    needs: [prepare]
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v6
+      with:
+        submodules: false
+
+    - name: Download sources
+      uses: actions/download-artifact@v7
+      with:
+        name: dependencies-sources
+        path: .
+
+    - name: Install CMake
+      uses: lukka/get-cmake@latest
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libevent-dev libfreetype6-dev libsqlite3-dev libgl1-mesa-dev liblua5.4-dev
+
+    - name: Configure CMake to generate export header
+      run: |
+        cp -r lua ocgcore/lua
+        mkdir -p build
+        cd build
+        cmake ..
+        cmake --build .
+
+    - name: Upload export header
+      uses: actions/upload-artifact@v6
+      with:
+        name: ocgcore-export-header
+        path: build/ocgcore_export.h
+
   build-ocgcore-windows:
     needs: [prepare]
     strategy:
